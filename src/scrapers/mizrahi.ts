@@ -228,19 +228,32 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
       throw new Error('Account number not found');
     }
 
-    const response = await Promise.any(TRANSACTIONS_REQUEST_URLS.map(async (url) => {
+    const ret = await Promise.any(TRANSACTIONS_REQUEST_URLS.map(async (url) => {
       const request = await this.page.waitForRequest(url);
       const data = createDataFromRequest(request, this.options.startDate);
       const headers = createHeadersFromRequest(request);
 
-      return fetchPostWithinPage<ScrapedTransactionsResult>(this.page, url, data, headers);
+      const response = await fetchPostWithinPage<ScrapedTransactionsResult>(this.page, url, data, headers);
+
+      if (!response || response.header.success === false) {
+        return {
+          error: response?.header?.messages?.[0].text ?? 'unknown error',
+        };
+      }
+      
+      return {
+        error: undefined,
+        rows: response.body.table.rows,
+        yitra: response.body.fields?.Yitra,
+      };
+
     }));
 
-    if (!response || response.header.success === false) {
-      throw new Error(`Error fetching transaction. Response message: ${response ? response.header.messages[0].text : ''}`);
+    if (ret.error !== undefined) {
+      throw new Error(`Error fetching transaction. Response message: ${ret.error}`);
     }
 
-    const relevantRows = response.body.table.rows.filter((row) => row.RecTypeSpecified);
+    const relevantRows = ret.rows.filter((row) => row.RecTypeSpecified);
     const oshTxn = convertTransactions(relevantRows);
 
     // workaround for a bug which the bank's API returns transactions before the requested start date
@@ -253,7 +266,7 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
     return {
       accountNumber,
       txns: allTxn,
-      balance: +response.body.fields?.Yitra,
+      balance: +ret?.yitra,
     };
   }
 }
