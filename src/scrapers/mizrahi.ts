@@ -1,4 +1,5 @@
 import moment from 'moment';
+import type { Moment } from 'moment';
 import { type Frame, type HTTPRequest, type Page } from 'puppeteer';
 import { SHEKEL_CURRENCY } from '../constants';
 import {
@@ -111,23 +112,20 @@ function createHeadersFromRequest(request: HTTPRequest) {
   };
 }
 
-function convertTransactions(txns: ScrapedTransaction[]): Transaction[] {
-  return txns.map((row) => {
-    const txnDate = moment(row.MC02PeulaTaaEZ, moment.HTML5_FMT.DATETIME_LOCAL_SECONDS)
-      .toISOString();
+function convertTransaction(txn: ScrapedTransaction, date: Moment): Transaction {
+  const txnDate = date.toISOString();
 
-    return {
-      type: TransactionTypes.Normal,
-      identifier: row.MC02AsmahtaMekoritEZ ? parseInt(row.MC02AsmahtaMekoritEZ, 10) : undefined,
-      date: txnDate,
-      processedDate: txnDate,
-      originalAmount: row.MC02SchumEZ,
-      originalCurrency: SHEKEL_CURRENCY,
-      chargedAmount: row.MC02SchumEZ,
-      description: row.MC02TnuaTeurEZ,
-      status: TransactionStatuses.Completed,
-    };
-  });
+  return {
+    type: TransactionTypes.Normal,
+    identifier: txn.MC02AsmahtaMekoritEZ ? parseInt(txn.MC02AsmahtaMekoritEZ, 10) : undefined,
+    date: txnDate,
+    processedDate: txnDate,
+    originalAmount: txn.MC02SchumEZ,
+    originalCurrency: SHEKEL_CURRENCY,
+    chargedAmount: txn.MC02SchumEZ,
+    description: txn.MC02TnuaTeurEZ,
+    status: TransactionStatuses.Completed,
+  };
 }
 
 async function extractPendingTransactions(page: Frame): Promise<Transaction[]> {
@@ -253,15 +251,26 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
       throw new Error(`Error fetching transaction. Response message: ${ret.error}`);
     }
 
-    const relevantRows = ret.rows.filter((row) => row.RecTypeSpecified);
-    const oshTxn = convertTransactions(relevantRows);
+    const transactions: Transaction[] = [];
 
-    // workaround for a bug which the bank's API returns transactions before the requested start date
     const startMoment = getStartMoment(this.options.startDate);
-    const oshTxnAfterStartDate = oshTxn.filter((txn) => moment(txn.date).isSameOrAfter(startMoment));
+    
+    for (const row of ret.rows) {
+      if (!row.RecTypeSpecified) {
+        continue;
+      }
+    
+      // workaround for a bug which the bank's API returns transactions before the requested start date
+      const txnDate = moment(row.MC02PeulaTaaEZ, moment.HTML5_FMT.DATETIME_LOCAL_SECONDS);
+      if (txnDate.isBefore(startMoment)) {
+        continue;
+      }
+
+      transactions.push(convertTransaction(row, txnDate));
+    }
 
     const pendingTxn = await this.getPendingTransactions();
-    const allTxn = oshTxnAfterStartDate.concat(pendingTxn);
+    const allTxn = transactions.concat(pendingTxn);
 
     return {
       accountNumber,
