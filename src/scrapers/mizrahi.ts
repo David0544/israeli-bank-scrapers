@@ -21,8 +21,14 @@ interface ScrapedTransaction {
   MC02SchumEZ: number;
   MC02AsmahtaMekoritEZ: string;
   MC02TnuaTeurEZ: string;
+  MC02KodGoremEZ: string;
+  MC02SeifMaralEZ: string;
+  MC02AgidEZ: string;
+  MC02SugTnuaKaspitEZ: string;
+  MC02ErehTaaEZ: string;
+  TransactionNumber: string;
+  MC02ShowDetailsEZ: string;
 }
-
 interface ScrapedTransactionsResult {
   header: {
     success: boolean;
@@ -36,6 +42,20 @@ interface ScrapedTransactionsResult {
       rows: ScrapedTransaction[];
     };
   };
+}
+
+interface TransactionDetailsIn {
+  inKodGorem: string;
+  inAsmachta: string;
+  inSchum: number;
+  inNakvanit: string;
+  inSugTnua: string;
+  inAgid: string;
+  inTarPeulaFormatted: string;
+  inTarErechFormatted: string;
+  inKodNose: string;
+  inKodTatNose: string;
+  inTransactionNumber: string;
 }
 
 const BASE_WEBSITE_URL = 'https://www.mizrahi-tefahot.co.il';
@@ -112,7 +132,7 @@ function createHeadersFromRequest(request: HTTPRequest) {
   };
 }
 
-function convertTransaction(txn: ScrapedTransaction, date: Moment): Transaction {
+function convertTransaction(txn: ScrapedTransaction, date: Moment, memo: string | undefined): Transaction {
   const txnDate = date.toISOString();
 
   return {
@@ -125,6 +145,7 @@ function convertTransaction(txn: ScrapedTransaction, date: Moment): Transaction 
     chargedAmount: txn.MC02SchumEZ,
     description: txn.MC02TnuaTeurEZ,
     status: TransactionStatuses.Completed,
+    memo,
   };
 }
 
@@ -213,6 +234,35 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
     return pendingTxn;
   }
 
+  private async getDepositDetails(row: ScrapedTransaction, extraHeaders: Record<string, any>)
+    : Promise<string | undefined> {
+    try {
+      const url = `${BASE_APP_URL}/Online/api/OSH/getMaherBerurimSMF`;
+      const data: TransactionDetailsIn = {
+        inAgid: row.MC02AgidEZ,
+        inAsmachta: row.MC02AsmahtaMekoritEZ,
+        inKodGorem: row.MC02KodGoremEZ,
+        inKodNose: row.MC02SeifMaralEZ,
+        inKodTatNose: '0',
+        inNakvanit: row.MC02KodGoremEZ,
+        inSchum: row.MC02SchumEZ,
+        inSugTnua: row.MC02SugTnuaKaspitEZ,
+        inTarErechFormatted: moment(row.MC02ErehTaaEZ == '0001-01-01T00:00:00' ? row.MC02PeulaTaaEZ : row.MC02ErehTaaEZ).format(DATE_FORMAT),
+        inTarPeulaFormatted:  moment(row.MC02PeulaTaaEZ).format(DATE_FORMAT),
+        inTransactionNumber: row.TransactionNumber,
+      };
+
+      const extraTransactionDetails = await fetchPostWithinPage<any>(this.page, url, data, extraHeaders);
+      if (extraTransactionDetails?.body.fields?.[0]?.[0]?.Records?.[0]?.Fields?.[0]) {
+        return JSON.stringify(extraTransactionDetails.body.fields[0][0].Records[0].Fields);
+      }
+    } catch (e) {
+      console.error('Error fetching deposit details', e);
+    }
+
+    return undefined;
+  }
+
   private async fetchAccount() {
     await this.page.waitForSelector(`a[href*="${OSH_PAGE}"]`);
     await this.page.$eval(`a[href*="${OSH_PAGE}"]`, (el) => (el as HTMLElement).click());
@@ -243,6 +293,7 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
         error: undefined,
         rows: response.body.table.rows,
         yitra: response.body.fields?.Yitra,
+        reqHeaders: headers,
       };
 
     }));
@@ -266,7 +317,12 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
         continue;
       }
 
-      transactions.push(convertTransaction(row, txnDate));
+      let memo = undefined;
+      if (row.MC02ShowDetailsEZ == '1') {
+        memo = await this.getDepositDetails(row, ret.reqHeaders);
+      }
+      
+      transactions.push(convertTransaction(row, txnDate, memo));
     }
 
     const pendingTxn = await this.getPendingTransactions();
