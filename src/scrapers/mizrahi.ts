@@ -28,6 +28,8 @@ interface ScrapedTransaction {
   MC02ErehTaaEZ: string;
   TransactionNumber: string;
   MC02ShowDetailsEZ: string;
+  MC02OfiTnuaEZ: string;
+  SkyChequeIndex: number;
 }
 interface ScrapedTransactionsResult {
   header: {
@@ -56,6 +58,13 @@ interface TransactionDetailsIn {
   inKodNose: string;
   inKodTatNose: string;
   inTransactionNumber: string;
+}
+
+interface TransactionChequesOfDepositIn {
+  ServiceName: string;
+  ChequeIndex: number;
+  SkyChequeIndex: number;
+  DepInx: number;
 }
 
 const BASE_WEBSITE_URL = 'https://www.mizrahi-tefahot.co.il';
@@ -263,6 +272,33 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
     return undefined;
   }
 
+  private async getDepositShaquesDetails(row: ScrapedTransaction, chequeIndex: number,
+    extraHeaders: Record<string, any>) : Promise<string | undefined> {
+    const url = `${BASE_APP_URL}/Online/api/OSH/getOshChequesList`;
+
+    let extraTransactionDetails = null;
+    let data: TransactionChequesOfDepositIn | null = null;
+    try {
+      data = {
+        SkyChequeIndex: +row.SkyChequeIndex,
+        ChequeIndex: chequeIndex,
+        DepInx: 0,
+        ServiceName: 'GetOutChequesOfDeposit',
+      };
+
+      extraTransactionDetails = await fetchPostWithinPage<any>(this.page, url, data, extraHeaders);
+      if (extraTransactionDetails?.body?.table?.rows?.[0]) {
+        return JSON.stringify(extraTransactionDetails.body.table.rows);
+      } else {
+        console.error(`Error fetching cheque details: ${extraTransactionDetails.header?.messages?.[0]?.text}`);
+      } 
+    } catch (e) {
+      console.error('Error fetching cheque details. Exception:', e);
+    }
+
+    return undefined;
+  }
+
   private async fetchAccount() {
     await this.page.waitForSelector(`a[href*="${OSH_PAGE}"]`);
     await this.page.$eval(`a[href*="${OSH_PAGE}"]`, (el) => (el as HTMLElement).click());
@@ -305,6 +341,7 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
     const transactions: Transaction[] = [];
 
     const startMoment = getStartMoment(this.options.startDate);
+    let chequeIndex = 0;
     
     for (const row of ret.rows) {
       if (!row.RecTypeSpecified) {
@@ -318,8 +355,17 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
       }
 
       let memo = undefined;
-      if (row.MC02ShowDetailsEZ == '1') {
+      const isChequeDeposit = '03' === row.MC02OfiTnuaEZ;
+      const isChequeOperation = isChequeDeposit || '01' === row.MC02OfiTnuaEZ || '05' === row.MC02OfiTnuaEZ || '06' === row.MC02OfiTnuaEZ || '07' === row.MC02OfiTnuaEZ || '08' === row.MC02OfiTnuaEZ;      
+      const isMoneyTransfer = row.MC02ShowDetailsEZ == '1';
+
+      if (isMoneyTransfer) {
         memo = await this.getDepositDetails(row, ret.reqHeaders);
+      } else if (isChequeOperation) {
+        if (isChequeDeposit) {
+          memo = await this.getDepositShaquesDetails(row, chequeIndex, ret.reqHeaders);
+        }
+        chequeIndex++;
       }
       
       transactions.push(convertTransaction(row, txnDate, memo));
