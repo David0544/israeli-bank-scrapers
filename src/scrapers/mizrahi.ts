@@ -33,10 +33,9 @@ interface ScrapedTransaction {
   MC02SeifMaralEZ: any;
   MC02NoseMaralEZ: any;
   TransactionNumber: any;
-  // Cheque-related fields
-  MC02OfiTnuaEZ?: string; // transaction type code — '03' = cheque deposit
-  SkyChequeIndex?: number; // cheque index in the full (unfiltered) rows array
-  chequeIndex?: number; // sequential index among all isCheque rows in the full API response — mirrors AngularJS $index
+  MC02OfiTnuaEZ?: string;
+  SkyChequeIndex?: number;
+  chequeIndex?: number; // calculated (not from API): position of this row among all cheque rows — the bank's API requires this exact counter to identify which cheque row to fetch
 }
 
 interface ScrapedTransactionsResult {
