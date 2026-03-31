@@ -298,8 +298,9 @@ class BaseScraperWithBrowser<TCredentials extends ScraperCredentials> extends Ba
   }
 
   async scrape(credentials: TCredentials): Promise<ScraperScrapingResult> {
+    this.extractedDeviceTrustData = undefined;
     const result = await super.scrape(credentials);
-    if (this.extractedDeviceTrustData) {
+    if (result.success && this.extractedDeviceTrustData) {
       result.deviceTrustData = this.extractedDeviceTrustData;
     }
     return result;
@@ -320,9 +321,11 @@ class BaseScraperWithBrowser<TCredentials extends ScraperCredentials> extends Ba
     if (_success && this.page) {
       try {
         this.extractedDeviceTrustData = await this.extractDeviceTrustData();
-        debug('extracted device trust data: %d cookies, %d localStorage entries',
+        debug(
+          'extracted device trust data: %d cookies, %d localStorage entries',
           this.extractedDeviceTrustData.cookies.length,
-          Object.keys(this.extractedDeviceTrustData.localStorage).length);
+          Object.keys(this.extractedDeviceTrustData.localStorage).length,
+        );
       } catch (e) {
         debug(`failed to extract device trust data: ${(e as Error).message}`);
       }
@@ -355,7 +358,13 @@ class BaseScraperWithBrowser<TCredentials extends ScraperCredentials> extends Ba
   private async extractDeviceTrustData(): Promise<DeviceTrustData> {
     const rawCookies = await this.page.cookies();
     const cookies = rawCookies.map(({ name, value, domain, path, expires, httpOnly, secure, sameSite }) => ({
-      name, value, domain, path, expires, httpOnly, secure,
+      name,
+      value,
+      domain,
+      path,
+      expires,
+      httpOnly,
+      secure,
       sameSite: sameSite as DeviceTrustData['cookies'][number]['sameSite'],
     }));
 
