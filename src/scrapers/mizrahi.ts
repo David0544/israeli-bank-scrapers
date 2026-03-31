@@ -33,6 +33,10 @@ interface ScrapedTransaction {
   MC02SeifMaralEZ: any;
   MC02NoseMaralEZ: any;
   TransactionNumber: any;
+  // Cheque-related fields
+  MC02OfiTnuaEZ?: string; // transaction type code — '03' = cheque deposit
+  SkyChequeIndex?: number; // cheque index in the full (unfiltered) rows array
+  chequeIndex?: number; // sequential index among all isCheque rows in the full API response — mirrors AngularJS $index
 }
 
 interface ScrapedTransactionsResult {
@@ -74,6 +78,21 @@ type MoreDetails = {
   memo: string | undefined;
 };
 
+type ChequeDetailsResponse = {
+  body: {
+    table: {
+      rows: Array<{
+        ChequeBank: number;
+        ChequeBranch: number;
+        ChequeAccount: number;
+        ChequeSerial: number;
+        ChequeAmount: number;
+        DepositChannel: string;
+      }>;
+    };
+  };
+};
+
 const BASE_WEBSITE_URL = 'https://www.mizrahi-tefahot.co.il';
 const LOGIN_URL = `${BASE_WEBSITE_URL}/login/index.html#/auth-page-he`;
 const BASE_APP_URL = 'https://mto.mizrahi-tefahot.co.il';
@@ -84,6 +103,7 @@ const TRANSACTIONS_REQUEST_URLS = [
   `${BASE_APP_URL}/OnlinePilot/api/SkyOSH/get428Index`,
   `${BASE_APP_URL}/Online/api/SkyOSH/get428Index`,
 ];
+const CHEQUE_DETAILS_URL = `${BASE_APP_URL}/Online/api/OSH/getOshChequesList`;
 const PENDING_TRANSACTIONS_PAGE = '/osh/legacy/legacy-Osh-p420';
 const PENDING_TRANSACTIONS_IFRAME = 'p420.aspx';
 const MORE_DETAILS_URL = `${BASE_APP_URL}/Online/api/OSH/getMaherBerurimSMF`;
@@ -192,6 +212,77 @@ function createDataFromRequest(request: HTTPRequest, optionsStartDate: Date) {
   return data;
 }
 
+async function getChequeDetails(
+  page: Page,
+  item: ScrapedTransaction,
+  apiHeaders: Record<string, string>,
+): Promise<MoreDetails> {
+  if (item.SkyChequeIndex == null) {
+    return { entries: {}, memo: undefined };
+  }
+
+  const params = {
+    SkyChequeIndex: item.SkyChequeIndex,
+    ChequeIndex: item.chequeIndex,
+    DepInx: 0,
+    ServiceName: 'GetOutChequesOfDeposit',
+  };
+
+  // Without this delay the bank API frequently returns HTTP 500. 250ms reduces
+  // the occurrence significantly but occasional failures can still happen.
+  await new Promise(resolve => setTimeout(resolve, 250));
+
+  debug('getChequeDetails params:', JSON.stringify(params));
+
+  const [rawBody, httpStatus] = await page.evaluate(
+    async (url: string, body: Record<string, any>, headers: Record<string, string>, referer: string) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        credentials: 'include',
+        referrer: referer,
+        headers: { Accept: 'application/json, text/plain, */*', ...headers },
+      });
+      return [await res.text(), res.status] as const;
+    },
+    CHEQUE_DETAILS_URL,
+    params,
+    apiHeaders,
+    `${BASE_APP_URL}/ngOnline/index.html`,
+  );
+
+  let response: ChequeDetailsResponse | null = null;
+  if (httpStatus === 200 && rawBody) {
+    try {
+      debug('Cheque details raw response:', rawBody);
+      response = JSON.parse(rawBody);
+    } catch (error: unknown) {
+      debug('getChequeDetails parse error:', error);
+      return { entries: {}, memo: undefined };
+    }
+  } else {
+    debug('getChequeDetails unexpected response status=%d body=%s', httpStatus, rawBody);
+  }
+
+  const rows = response?.body?.table?.rows;
+  if (!rows || rows.length === 0) {
+    return { entries: {}, memo: undefined };
+  }
+
+  const entries = Object.fromEntries(
+    rows.map((row, i) => [
+      `שיק ${i + 1}`,
+      `בנק ${row.ChequeBank}, סניף ${row.ChequeBranch}, חשבון ${row.ChequeAccount}, מספר ${row.ChequeSerial}, סכום ${row.ChequeAmount}`,
+    ]),
+  );
+
+  const memo = rows
+    .map((row, i) => `שיק ${i + 1}: בנק ${row.ChequeBank}, חשבון ${row.ChequeAccount}, סכום ${row.ChequeAmount}`)
+    .join(' | ');
+
+  return { entries, memo };
+}
+
 function createHeadersFromRequest(request: HTTPRequest) {
   return {
     mizrahixsrftoken: request.headers().mizrahixsrftoken,
@@ -215,38 +306,40 @@ async function convertTransactions(
   pendingIfTodayTransaction: boolean = false,
   options?: ScraperOptions,
 ): Promise<Transaction[]> {
-  return Promise.all(
-    txns.map(async row => {
-      const moreDetails = await getMoreDetails(row);
+  const results: Transaction[] = [];
 
-      const txnDate = moment(row.MC02PeulaTaaEZ, moment.HTML5_FMT.DATETIME_LOCAL_SECONDS).toISOString();
+  for (const row of txns) {
+    const moreDetails = await getMoreDetails(row);
 
-      const result: Transaction = {
-        type: TransactionTypes.Normal,
-        identifier: getTransactionIdentifier(row),
-        date: txnDate,
-        processedDate: txnDate,
-        originalAmount: row.MC02SchumEZ,
-        originalCurrency: SHEKEL_CURRENCY,
-        chargedAmount: row.MC02SchumEZ,
-        description: row.MC02TnuaTeurEZ,
-        memo: moreDetails?.memo,
-        status:
-          pendingIfTodayTransaction && row.IsTodayTransaction
-            ? TransactionStatuses.Pending
-            : TransactionStatuses.Completed,
-      };
+    const txnDate = moment(row.MC02PeulaTaaEZ, moment.HTML5_FMT.DATETIME_LOCAL_SECONDS).toISOString();
 
-      if (options?.includeRawTransaction) {
-        result.rawTransaction = getRawTransaction({
-          ...row,
-          additionalInformation: moreDetails.entries,
-        });
-      }
+    const result: Transaction = {
+      type: TransactionTypes.Normal,
+      identifier: getTransactionIdentifier(row),
+      date: txnDate,
+      processedDate: txnDate,
+      originalAmount: row.MC02SchumEZ,
+      originalCurrency: SHEKEL_CURRENCY,
+      chargedAmount: row.MC02SchumEZ,
+      description: row.MC02TnuaTeurEZ,
+      memo: moreDetails?.memo,
+      status:
+        pendingIfTodayTransaction && row.IsTodayTransaction
+          ? TransactionStatuses.Pending
+          : TransactionStatuses.Completed,
+    };
 
-      return result;
-    }),
-  );
+    if (options?.includeRawTransaction) {
+      result.rawTransaction = getRawTransaction({
+        ...row,
+        additionalInformation: moreDetails.entries,
+      });
+    }
+
+    results.push(result);
+  }
+
+  return results;
 }
 
 async function extractPendingTransactions(page: Frame): Promise<Transaction[]> {
@@ -369,11 +462,26 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
       );
     }
 
+    // Assign chequeIndex to all rows BEFORE filtering — mirrors AngularJS $index logic
+    const CHEQUE_OFI_CODES = ['01', '03', '05', '06', '07', '08'];
+    let chequeIndexCounter = 0;
+    for (const row of response.body.table.rows) {
+      if (row.MC02OfiTnuaEZ && CHEQUE_OFI_CODES.includes(row.MC02OfiTnuaEZ)) {
+        row.chequeIndex = chequeIndexCounter;
+        chequeIndexCounter++;
+      }
+    }
+
     const relevantRows = response.body.table.rows.filter(row => row.RecTypeSpecified);
     const oshTxn = await convertTransactions(
       relevantRows,
       this.options.additionalTransactionInformation
-        ? row => getExtraTransactionDetails(this.page, row, apiHeaders)
+        ? row => {
+            if (row.MC02OfiTnuaEZ === '03') {
+              return getChequeDetails(this.page, row, apiHeaders);
+            }
+            return getExtraTransactionDetails(this.page, row, apiHeaders);
+          }
         : () => Promise.resolve({ entries: {}, memo: undefined }),
       this.options.optInFeatures?.includes('mizrahi:pendingIfTodayTransaction'),
       this.options,
