@@ -13,6 +13,24 @@
 > 
 > The scrapers are set to use timezone `Asia/Jerusalem` to avoid conflicts in case you're running the scrapers outside Israel.
  
+## This fork
+
+This fork adds per-cheque breakdown for Mizrahi Bank cheque deposit transactions.
+When depositing multiple cheques in a single operation, the official scraper only shows
+the total combined amount. This fork fetches the individual details of each cheque
+(bank, branch, account, serial number and amount) from the bank's API.
+
+> **Note:** To avoid HTTP 500 errors from the bank API, transaction processing is serialized
+> (instead of parallel) with a 250ms delay between cheque detail requests. In rare cases it
+> may still fail — when this happens the memo will be empty for that transaction but no data is lost.
+
+To use this fork, install it directly from GitHub:
+```bash
+npm install github:David0544/israeli-bank-scrapers#fix/mizrahi-cheque-details
+```
+
+---
+
 # What's here?
 What you can find here is scrapers for all major Israeli banks and credit card companies. That's the plan at least.
 Currently only the following banks are supported:
