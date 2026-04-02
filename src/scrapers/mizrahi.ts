@@ -75,6 +75,7 @@ type MoreDetailsResponse = {
 type MoreDetails = {
   entries: Record<string, string>;
   memo: string | undefined;
+  failed?: boolean;
 };
 
 type ChequeDetailsResponse = {
@@ -256,16 +257,28 @@ async function getChequeDetails(
       debug('Cheque details raw response:', rawBody);
       response = JSON.parse(rawBody);
     } catch (error: unknown) {
-      debug('getChequeDetails parse error:', error);
-      return { entries: {}, memo: undefined };
+      console.error(
+        'getChequeDetails: failed to parse response for params=%s error=%s body=%s',
+        JSON.stringify(params),
+        error,
+        rawBody,
+      );
+      return { entries: {}, memo: undefined, failed: true };
     }
   } else {
-    debug('getChequeDetails unexpected response status=%d body=%s', httpStatus, rawBody);
+    console.error(
+      'getChequeDetails: unexpected status=%d for params=%s body=%s',
+      httpStatus,
+      JSON.stringify(params),
+      rawBody,
+    );
+    return { entries: {}, memo: undefined, failed: true };
   }
 
   const rows = response?.body?.table?.rows;
   if (!rows || rows.length === 0) {
-    return { entries: {}, memo: undefined };
+    console.error('getChequeDetails: no rows returned for params=%s', JSON.stringify(params));
+    return { entries: {}, memo: undefined, failed: true };
   }
 
   const entries = Object.fromEntries(
@@ -377,6 +390,8 @@ async function postLogin(page: Page) {
 type ScraperSpecificCredentials = { username: string; password: string };
 
 class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> {
+  private partialScrape = false;
+
   getLoginOptions(credentials: ScraperSpecificCredentials) {
     return {
       loginUrl: LOGIN_URL,
@@ -403,6 +418,10 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
 
         await this.page.$eval(`${accountDropDownItemSelector}:nth-child(${i + 1})`, el => (el as HTMLElement).click());
         results.push(await this.fetchAccount());
+      }
+
+      if (this.partialScrape) {
+        console.error('Mizrahi scrape completed with partial data: some cheque deposit details could not be fetched');
       }
 
       return {
@@ -475,9 +494,11 @@ class MizrahiScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials> 
     const oshTxn = await convertTransactions(
       relevantRows,
       this.options.additionalTransactionInformation
-        ? row => {
+        ? async (row: ScrapedTransaction) => {
             if (row.MC02OfiTnuaEZ === '03') {
-              return getChequeDetails(this.page, row, apiHeaders);
+              const result = await getChequeDetails(this.page, row, apiHeaders);
+              if (result.failed) this.partialScrape = true;
+              return result;
             }
             return getExtraTransactionDetails(this.page, row, apiHeaders);
           }
