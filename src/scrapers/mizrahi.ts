@@ -218,7 +218,12 @@ async function getChequeDetails(
   apiHeaders: Record<string, string>,
 ): Promise<MoreDetails> {
   if (item.SkyChequeIndex == null) {
-    return { entries: {}, memo: undefined };
+    console.error(
+      'getChequeDetails: SkyChequeIndex is null for transaction=%s chequeIndex=%s — skipping cheque details',
+      item.MC02AsmahtaMekoritEZ,
+      item.chequeIndex,
+    );
+    return { entries: {}, memo: undefined, failed: true };
   }
 
   const params = {
