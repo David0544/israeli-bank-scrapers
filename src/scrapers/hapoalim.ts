@@ -2,7 +2,6 @@ import moment from 'moment';
 import { type Page } from 'puppeteer';
 import { v4 as uuid4 } from 'uuid';
 import { getDebug } from '../helpers/debug';
-import { clickButton } from '../helpers/elements-interactions';
 import { fetchGetWithinPage, fetchPostWithinPage } from '../helpers/fetch';
 import { getCurrentUrl } from '../helpers/navigation';
 import { waitUntil } from '../helpers/waiting';
@@ -342,24 +341,43 @@ class HapoalimScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials>
       };
     }
 
-    const MAX_OTP_ATTEMPTS = 3;
+    const MAX_OTP_ATTEMPTS = 1;
     for (let attempt = 1; attempt <= MAX_OTP_ATTEMPTS; attempt++) {
       debug(`2FA page detected, requesting OTP from caller (attempt ${attempt}/${MAX_OTP_ATTEMPTS})`);
       const otpCode = await credentials.otpCodeRetriever({ attempt });
 
       debug('entering OTP code');
       const otpInputs = await this.page.$$(`${OTP_FORM_SELECTOR} input`);
-      for (let i = 0; i < otpInputs.length; i++) {
-        await otpInputs[i].click({ clickCount: 3 });
-        if (i < otpCode.length) {
-          await otpInputs[i].type(otpCode[i]);
-        } else {
-          await otpInputs[i].press('Backspace');
+      debug('found %d OTP input(s)', otpInputs.length);
+      if (otpInputs.length === 1) {
+        // Single input — type the full code at once
+        await otpInputs[0].click({ clickCount: 3 });
+        await otpInputs[0].type(otpCode);
+        debug('typed full OTP code into single input');
+      } else if (otpInputs.length > 1) {
+        // One input per digit
+        for (let i = 0; i < otpInputs.length; i++) {
+          await otpInputs[i].click({ clickCount: 3 });
+          if (i < otpCode.length) {
+            await otpInputs[i].type(otpCode[i]);
+          } else {
+            await otpInputs[i].press('Backspace');
+          }
         }
+        debug('typed OTP code digit-by-digit into %d inputs', otpInputs.length);
+      } else {
+        debug('WARNING: no OTP input fields found with selector "%s"', `${OTP_FORM_SELECTOR} input`);
       }
 
+      const submitBtn = await this.page.$(OTP_SUBMIT_SELECTOR);
+      debug('submit button found: %s', !!submitBtn);
       debug('submitting OTP');
-      await clickButton(this.page, OTP_SUBMIT_SELECTOR);
+      if (submitBtn) {
+        await submitBtn.click();
+      } else if (otpInputs.length > 0) {
+        debug('submit button not found — pressing Enter on input as fallback');
+        await otpInputs[otpInputs.length - 1].press('Enter');
+      }
 
       await waitUntil(
         async () => {
@@ -372,7 +390,7 @@ class HapoalimScraper extends BaseScraperWithBrowser<ScraperSpecificCredentials>
           return false;
         },
         'waiting for OTP result',
-        20000,
+        30000,
         1000,
       );
 
